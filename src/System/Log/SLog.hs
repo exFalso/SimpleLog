@@ -1,5 +1,27 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, DefaultSignatures, ScopedTypeVariables, NamedFieldPuns, OverloadedStrings, MultiParamTypeClasses, TemplateHaskell, FlexibleContexts, TypeFamilies #-}
-module SLog where
+{-# LANGUAGE GeneralizedNewtypeDeriving, DefaultSignatures, ScopedTypeVariables, NamedFieldPuns, OverloadedStrings, MultiParamTypeClasses, TemplateHaskell, FlexibleContexts, TypeFamilies, StandaloneDeriving #-}
+module System.Log.SLog
+    ( module System.Log.SLog.Format
+    , Severity(..)
+    , MonadSLog(..)
+    , defaultLogFormat
+    , logD
+    , logS
+    , logI
+    , logW
+    , logE
+    , Logger(..)
+    , Filter
+    , anySev
+    , LogLine(..)
+    , LogConfig(..)
+    , defaultLogConfig
+    , SLogT
+    , SLog
+    , runSLogT
+    , simpleLog
+    , forkSLog
+    )
+where
 
 import System.Console.ANSI
 import System.IO
@@ -8,17 +30,20 @@ import Data.Time.LocalTime
 import Data.List
 import Control.Applicative
 import Control.Monad.State
+import Control.Monad.Error
 import Control.Concurrent.STM
 import Control.Concurrent
 import Control.Concurrent.ForkableT
+import Control.Concurrent.ForkableT.Instances()
 import System.Directory
 import qualified Data.Map as Map
 import Control.Monad.Trans.Resource
 import Control.Monad.Trans.Control
+import Control.Monad.Base
 
 import Prelude hiding (log)
 
-import Format
+import System.Log.SLog.Format
 
 
 data Severity
@@ -28,14 +53,15 @@ data Severity
 -- SGR attributes
 
 
-class (Monad m) => MonadSLog m where
+class (MonadIO m) => MonadSLog m where
     log :: Severity -> String -> m ()
     default log :: (MonadTrans t, MonadSLog m) => Severity -> String -> t m ()
-    log sev s = lift (log sev s)
+    log sev = lift . log sev
 
-instance (MonadSLog m) => MonadSLog (StateT s m) where
-instance (MonadSLog m) => MonadSLog (ReaderT s m) where
 
+instance (MonadSLog m) => MonadSLog (StateT s m)
+instance (MonadSLog m) => MonadSLog (ReaderT s m)
+instance (MonadSLog m, Error e) => MonadSLog (ErrorT e m)
 
 defaultLogFormat :: LogFormat
 defaultLogFormat = for $(mat "%d(%F %T) | %s | [%n] %m\n")
@@ -118,13 +144,27 @@ newtype SLogT m a
     = SLogT { unSLogT :: ReaderT SLogEnv (ResourceT m) a }
       deriving ( Functor, Monad, MonadIO, Applicative
                , MonadThrow, MonadResource, MonadReader SLogEnv)
+deriving instance (MonadBase IO m) => MonadBase IO (SLogT m)
+
+-- SLogT n b -> n b
+
+-- m (StT Resou) -> m (StT SLogT)
+
+instance MonadTransControl SLogT where
+    newtype StT SLogT a = StTSLogT {unStTSLogT :: StT ResourceT a}
+    liftWith f = SLogT . ReaderT $ \r ->
+                   liftWith $ \lres ->
+                     f $ \(SLogT t) ->
+                       liftM StTSLogT $ lres $ runReaderT t r
+    restoreT = SLogT . lift . restoreT . liftM unStTSLogT
+
+instance (MonadBaseControl IO m) => MonadBaseControl IO (SLogT m) where
+    newtype StM (SLogT m) a = StMSLogT { unStMSLogT :: ComposeSt SLogT m a }
+    liftBaseWith = defaultLiftBaseWith StMSLogT
+    restoreM = defaultRestoreM unStMSLogT
 
 instance MonadTrans SLogT where
     lift = SLogT . lift . lift
-
--- instance MonadTransControl SLogT where
---     newtype StT SLogT a = StSLog (StT ResourceT a)
---     liftWith f = lift . f $ \tb -> unSLogT 
 
 type SLog = SLogT IO
 
@@ -183,27 +223,27 @@ initLogger :: (MonadIO m, MonadThrow m, MonadUnsafeIO m, Applicative m) => (Filt
 initLogger (fter, l)
     = case l of
         AsyncFileLogger f -> do
-               trueF <- liftIO $ canonExist f
-               m <- get
-               nv <- case Map.lookup trueF m of
-                       Nothing -> do
-                               (_, h) <- allocate (openFile trueF AppendMode) hClose
-                               tchan <- liftIO newTChanIO
-                               lock <- liftIO $ newMVar ()
-                               _ <- liftIO . forkIO $ asyncLogger h lock tchan
-                               return $ InitAsync fter tchan h lock
-                       Just (InitSync fter' h lock) ->
-                           liftIO $ do
-                               tchan <- newTChanIO
-                               _ <- forkIO $ asyncLogger h lock tchan
-                               return $ Both fter' h lock fter tchan
-                       Just (InitAsync fter' tchan h lock) ->
-                           liftIO $ do
-                               return $ InitAsync (liftM2 (||) fter' fter) tchan h lock
-                       Just (Both fter' h lock fter'' tchan) ->
-                           liftIO $ do
-                               return $ Both fter' h lock (liftM2 (||) fter fter'') tchan
-               modify (Map.insert trueF nv)
+          trueF <- liftIO $ canonExist f
+          m <- get
+          nv <- case Map.lookup trueF m of
+            Nothing -> do
+              (_, h) <- allocate (openFile trueF AppendMode) $
+                \h -> hFlush h >> hClose h
+              tchan <- liftIO newTChanIO
+              lock <- liftIO $ newMVar ()
+              _ <- liftIO . forkIO $ asyncLogger h lock tchan
+              return $ InitAsync fter tchan h lock
+            Just (InitSync fter' h lock) -> do
+              _ <- register $ hFlush h
+              liftIO $ do
+                tchan <- newTChanIO
+                _ <- forkIO $ asyncLogger h lock tchan
+                return $ Both fter' h lock fter tchan
+            Just (InitAsync fter' tchan h lock) -> liftIO $ do
+              return $ InitAsync (liftM2 (||) fter' fter) tchan h lock
+            Just (Both fter' h lock fter'' tchan) -> liftIO $ do
+              return $ Both fter' h lock (liftM2 (||) fter fter'') tchan
+          modify (Map.insert trueF nv)
         SyncFileLogger f -> do
                trueF <- liftIO $ canonExist f
                m <- get
@@ -222,6 +262,8 @@ initLogger (fter, l)
                            liftIO $ do
                                return $ Both (liftM2 (||) fter fter') h lock fter'' tchan
                modify (Map.insert trueF nv)
+        StdoutLogger -> register (hFlush stdout) >> return ()
+        StderrLogger -> register (hFlush stderr) >> return ()
         _ -> return ()
 
 asyncLogger :: Handle -> MVar () -> TChan String -> IO ()
@@ -248,22 +290,14 @@ formatLine isColour les ll = concatMap (formatLine' ll) les ++ "\n"
       formatLine' LogLine{logTimestamp} (DateTimeElem f) = f logTimestamp
       formatLine' LogLine{logThread} ThreadElem      = logThread
 
-forkSLog :: (Forkable m n) => String -> SLogT n () -> SLogT m ThreadId
-forkSLog tname l = do
-  env <- SLogT ask
-  SLogT . lift . transResourceT fork $ runReaderT (unSLogT l) env {threadName = tname}
+instance (MonadBaseControl IO m, MonadIO m) => Forkable (SLogT m) (SLogT m) where
+    fork (SLogT (ReaderT f)) = SLogT . ReaderT $ \env -> do
+                                 fork $ do
+                                   tid <- liftIO myThreadId
+                                   f env { threadName = show tid }
 
--- THIS IS WRONG, SHOULD USE resourceForkIO, otherwise parent thread exiting will always deallocate resource forked off thread may use! but the API for resourceForkIO sucks, so... asdasd
-instance ForkableT SLogT where
-    forkT l = do
-      env <- SLogT ask
-      SLogT . lift . transResourceT fork $ do
-                           tid <- liftIO myThreadId
-                           runReaderT (unSLogT l) env {threadName = show tid}
-instance (Forkable m n) => Forkable (SLogT m) (SLogT n)
-
-pad0 :: Int -> String -> String
-pad0 n = reverse . take n . (++ repeat '0') . reverse
+forkSLog :: (MonadBaseControl IO m, MonadIO m) => String -> SLogT m () -> SLogT m ThreadId
+forkSLog tname (SLogT m) = SLogT . local (\e -> e { threadName = tname }) $ fork m
 
 padS :: Int -> String -> String
 padS n = take n . (++ repeat ' ')
@@ -287,4 +321,3 @@ instance (MonadIO m, Functor m) => MonadSLog (SLogT m) where
                        else nonColoured
         mapM_ (\(fter, l) -> when (fter sev) $
                              logger l logLine nonColoured coloured) loggerInternals
-

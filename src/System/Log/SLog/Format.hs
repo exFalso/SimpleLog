@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings, TemplateHaskell #-}
-module Format where
+module System.Log.SLog.Format where
 
 import Control.Applicative
 import Language.Haskell.TH
