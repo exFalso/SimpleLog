@@ -1,22 +1,36 @@
 {-# LANGUAGE OverloadedStrings, TemplateHaskell #-}
-module System.Log.SLog.Format where
+{-
+  This module defines the LogFormat datatype that describes how to format a log line.
+  It also defines a template function $(format _) :: LogFormat that allows C-style formatting.
+  The format string is thus parsed at compile time
+-}
+module System.Log.SLog.Format
+    ( LogFormatElem(..)
+    , LogFormat
+    , format )
+where
 
 import Control.Applicative
 import Language.Haskell.TH
-import qualified Data.ByteString.Char8 as BS
-import qualified Data.Attoparsec.Char8 as A
+import Language.Haskell.TH.Lift
+import qualified Data.Text as T
+import qualified Data.Attoparsec.Text as A
 import Data.Time.Format
 import Data.Time.LocalTime
 import System.Locale
+import Data.String
+
+-- An inefficient orphan Lift instance for Text. It is run at compile time so no worries
+instance Lift T.Text where
+    lift t = let s = T.unpack t in [| fromString s :: T.Text |]
 
 data LogFormatElemTH
     = MessageElemTH
     | SeverityElemTH
-    | StringElemTH String
+    | StringElemTH T.Text
     | DateTimeElemTH String -- (ZonedTime -> String)
     | ThreadElemTH
       deriving (Show)
--- deriveLift ''LogFormatElemTH
 
 type LogFormatTH = [LogFormatElemTH]
 
@@ -24,30 +38,30 @@ type LogFormatTH = [LogFormatElemTH]
 data LogFormatElem
     = MessageElem
     | SeverityElem
-    | StringElem String
-    | DateTimeElem (ZonedTime -> String)
+    | StringElem T.Text
+    | DateTimeElem (ZonedTime -> T.Text)
     | ThreadElem
 
 type LogFormat = [LogFormatElem]
 
-for :: LogFormatTH -> LogFormat
-for = map for'
-    where
-      for' MessageElemTH = MessageElem
-      for' SeverityElemTH = SeverityElem
-      for' (StringElemTH s) = StringElem s
-      for' (DateTimeElemTH s) = DateTimeElem $ formatTime defaultTimeLocale s
-      for' ThreadElemTH = ThreadElem
+finaliseFormat :: LogFormatTH -> LogFormat
+finaliseFormat = map for'
+  where
+    for' MessageElemTH = MessageElem
+    for' SeverityElemTH = SeverityElem
+    for' (StringElemTH s) = StringElem s
+    for' (DateTimeElemTH s) = DateTimeElem $ T.pack . formatTime defaultTimeLocale s
+    for' ThreadElemTH = ThreadElem
 
-formatParser :: A.Parser [(Q Exp)] -- LogFormat
+formatParser :: A.Parser [(ExpQ)] -- LogFormat
 formatParser
     = A.endOfInput *> return [] <|> do
-        e <- A.choice [ A.takeWhile1 (/= '%') >>= \bs -> let s = BS.unpack bs in return [|StringElemTH s|]
+        e <- A.choice [ A.takeWhile1 (/= '%') >>= \t -> return [|StringElemTH t|]
                       , A.char '%' *> elemParser
                       ]
         (e :) <$> formatParser
 
-elemParser :: A.Parser (Q Exp) -- LogFormatElemTH
+elemParser :: A.Parser (ExpQ) -- LogFormatElemTH
 elemParser = A.choice [ A.char '%' *> return [|StringElemTH "%"|]
                       , A.char 'm' *> return [|MessageElemTH|]
                       , A.char 's' *> return [|SeverityElemTH|]
@@ -56,20 +70,27 @@ elemParser = A.choice [ A.char '%' *> return [|StringElemTH "%"|]
                       ]
 
 datetimeParser :: A.Parser String
-datetimeParser = BS.unpack <$> (A.char '(' *> datetimeParser' <* A.char ')')
-  -- return $ if formatStr == ""
-  --          then show
-  --          else formatTime defaultTimeLocale (BS.unpack formatStr)
+datetimeParser = fmap T.unpack $ A.char '(' *> datetimeParser' <* A.char ')'
+  where
+    datetimeParser' :: A.Parser T.Text
+    datetimeParser' = do
+      s <- A.takeWhile (\c -> c /= '\\' && c /= ')')
+      A.choice [ A.string "\\)" *> ((\r -> T.concat [s, ")", r]) <$> datetimeParser')
+               , liftA3
+                   (\a b c -> a `T.cons` b `T.cons` c)
+                   (A.char '\\')
+                   A.anyChar
+                   datetimeParser'
+               , return s
+               ]
 
-datetimeParser' :: A.Parser BS.ByteString
-datetimeParser' = do
-  s <- A.takeWhile (\c -> c /= '\\' && c /= ')')
-  A.choice [ A.string "\\)" *> ((\r -> BS.concat [s, ")", r]) <$> datetimeParser')
-           , liftA3 (\a b c -> a `BS.cons` b `BS.cons` c) (A.char '\\') A.anyChar datetimeParser'
-           , return s
-           ]
 
+-- $(mat _) :: LogFormatTH
+mat :: String -> ExpQ
+mat s = case A.parseOnly formatParser $ T.pack s of
+          Left err -> fail err
+          Right exps -> ListE <$> sequence exps
 
--- $(mat _) :: LogFormat
-mat :: String -> Q Exp
-mat bs = ListE <$> sequence (either (return . fail) id $ A.parseOnly formatParser $ BS.pack bs)
+-- $(format _) :: LogFormat
+format :: String -> ExpQ
+format s = [| finaliseFormat $(mat s) |]
