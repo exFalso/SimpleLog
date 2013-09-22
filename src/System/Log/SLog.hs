@@ -10,6 +10,7 @@ module System.Log.SLog
     , logW
     , logE
     , Logger(..)
+    , Sync(..)
     , Filter
     , anySev
     , LogLine(..)
@@ -72,20 +73,20 @@ instance (MonadSLog m, Error e) => MonadSLog (ErrorT e m)
 defaultLogFormat :: LogFormat
 defaultLogFormat = $(format "%d(%F %T) | %s | [%n] %m\n")
 
-logD :: MonadSLog m => T.Text -> m ()
-logD = log DEBUG
+logD :: MonadSLog m => String -> m ()
+logD = log DEBUG . T.pack
 
-logS :: MonadSLog m => T.Text -> m ()
-logS = log SUCCESS
+logS :: MonadSLog m => String -> m ()
+logS = log SUCCESS . T.pack
 
-logI :: MonadSLog m => T.Text -> m ()
-logI = log INFO
+logI :: MonadSLog m => String -> m ()
+logI = log INFO . T.pack
 
-logW :: MonadSLog m => T.Text -> m ()
-logW = log WARNING
+logW :: MonadSLog m => String -> m ()
+logW = log WARNING . T.pack
 
-logE :: MonadSLog m => T.Text -> m ()
-logE = log ERROR
+logE :: MonadSLog m => String -> m ()
+logE = log ERROR . T.pack
 
 
 sgr :: Severity -> [SGR]
@@ -206,6 +207,7 @@ simpleLog fName s = do
   (a, fkey) <- runSLogT (defaultLogConfig fName) defaultLogFormat tName s
   liftIO $ waitFlush fkey
   return a
+
 
 initLoggers :: (MonadIO m, MonadThrow m, MonadUnsafeIO m, Applicative m) => [(Filter, Logger)] -> ResourceT m [(Filter, LoggerInternal)]
 initLoggers fls = do
