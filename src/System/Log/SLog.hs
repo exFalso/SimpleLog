@@ -38,7 +38,6 @@ import Control.Monad.Error
 import Control.Concurrent.STM
 import Control.Concurrent
 import Control.Concurrent.ForkableT
-import Control.Concurrent.ForkableT.Instances()
 import System.Directory
 import qualified Data.Map as Map
 import Control.Monad.Trans.Resource
@@ -47,7 +46,6 @@ import Control.Monad.Base
 import Control.Monad.Cont
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-
 import Prelude hiding (log)
 
 import System.Log.SLog.Format
@@ -140,8 +138,8 @@ defaultLogConfig fName
 --     | TChanLoggerInternal (TChan LogLine)
 
 data LoggerInternal
-    = SyncLoggerInternal Handle (MVar ())
-    | AsyncLoggerInternal (TChan T.Text)
+    = SyncLoggerInternal Handle (MVar ()) Bool
+    | AsyncLoggerInternal (TChan T.Text) Bool
     | TChanLoggerInternal (TChan LogLine)
 
 withSgr :: [SGR] -> T.Text -> T.Text
@@ -194,12 +192,13 @@ runSLogT :: (MonadIO m, MonadThrow m, MonadUnsafeIO m, Applicative m, MonadBaseC
 runSLogT LogConfig { .. } lf tName (SLogT r)
     = runResourceT $ do
         (_, tvar) <- allocate (newTVarIO False) (\t -> atomically $ writeTVar t True)
-        internals <- initLoggers loggers
-        a <- runReaderT r SLogEnv{ threadName = tName
-                                 , loggerInternals = internals
-                                 , logColours = ansiColours
-                                 , logFormat = lf }
-        return (a, FlushKey tvar)
+        runResourceT $ do
+          internals <- initLoggers loggers
+          a <- lift $ runReaderT r SLogEnv{ threadName = tName
+                                          , loggerInternals = internals
+                                          , logColours = ansiColours
+                                          , logFormat = lf }
+          return (a, FlushKey tvar)
 
 simpleLog :: (MonadIO m, MonadUnsafeIO m, MonadThrow m, Applicative m, MonadBaseControl IO m) => FilePath -> SLogT m a -> m a
 simpleLog fName s = do
@@ -209,37 +208,37 @@ simpleLog fName s = do
   return a
 
 
-initLoggers :: (MonadIO m, MonadThrow m, MonadUnsafeIO m, Applicative m) => [(Filter, Logger)] -> ResourceT m [(Filter, LoggerInternal)]
+initLoggers :: (MonadIO m, MonadThrow m, MonadUnsafeIO m, Applicative m) => [(Filter, Logger)] -> ResourceT (ResourceT m) [(Filter, LoggerInternal)]
 initLoggers fls = do
   InitState{..} <- liftIO $ aggregateLoggers fls
 
   let stdHandle (Just ini) h = do
-        _ <- register (hFlush h)
-        return [(h, ini)]
+        _ <- lift $ register (hFlush h)
+        return [(h, ini, True)]
       stdHandle Nothing _ = return []
 
       createHandle (fname, ini) = do
         (_, h) <- allocate
                   (openFile fname AppendMode)
                   (\h -> hFlush h >> hClose h)
-        return (h, ini)
+        return (h, ini, False)
 
   sout <- stdHandle stdoutInit stdout
   serr <- stdHandle stderrInit stderr
-  files <- mapM createHandle $ Map.toList fileInitMap
+  files <- lift . mapM createHandle $ Map.toList fileInitMap
 
-  let toInternal (h, InitSync f) = do
+  let toInternal (h, InitSync f, c) = do
         lock <- liftIO $ newMVar ()
-        return $ [(f, SyncLoggerInternal h lock)]
-      toInternal (h, InitAsync f) = do
+        return $ [(f, SyncLoggerInternal h lock c)]
+      toInternal (h, InitAsync f, c) = do
         tchan <- liftIO newTChanIO
         _ <- forkCleanUp $ lift . asyncLogger Nothing h tchan
-        return $ [(f, AsyncLoggerInternal tchan)]
-      toInternal (h, Both fs fa) = do
+        return $ [(f, AsyncLoggerInternal tchan c)]
+      toInternal (h, Both fs fa, c) = do
         lock <- liftIO $ newMVar ()
         tchan <- liftIO newTChanIO
         _ <- forkCleanUp $ lift . asyncLogger (Just lock) h tchan
-        return $ [(fs, SyncLoggerInternal h lock), (fa, AsyncLoggerInternal tchan)]
+        return $ [(fs, SyncLoggerInternal h lock c), (fa, AsyncLoggerInternal tchan c)]
 
       toInternalTChan (f, tchan) = (f, TChanLoggerInternal tchan)
   
@@ -268,17 +267,14 @@ instance Semigroup InitLogger where
 canonExist :: String -> IO String
 canonExist f = appendFile f "" >> canonicalizePath f
 
--- Forks a thread that will get an exit signal through a TVar when the ResourceT is run
+-- Forks a thread that will get an exit signal through a TVar when the outer ResourceT is run.
+-- The forked off ResourceT is the inner one
 forkCleanUp :: (MonadIO m, MonadThrow m, MonadUnsafeIO m, Applicative m) =>
-               (TVar Bool -> ResIO ()) -> ResourceT m ThreadId
+               (TVar Bool -> ResIO ()) -> ResourceT (ResourceT m) ThreadId
 forkCleanUp io = do
-  exitSignal <- liftIO $ newTVarIO False
-  stst <- liftWith $ \unliftRes -> unliftRes $ do
-    (_, st) <- allocate
-      (unliftRes . resourceForkIO $ io exitSignal)
-      (\_ -> atomically $ writeTVar exitSignal True)
-    return st
-  restoreT . return =<< restoreT (return stst)
+  (_, exitSignal) <- allocate (newTVarIO False) (\t -> atomically $ writeTVar t True)
+  st <- lift . liftWith $ \unliftRes -> liftIO . unliftRes . fork $ io exitSignal
+  lift . restoreT $ return st
 
 data InitState = InitState { fileInitMap :: Map.Map FilePath InitLogger
                            , stdoutInit :: Maybe InitLogger
@@ -325,9 +321,15 @@ asyncLogger mlock h tchan exitSignal = flip runContT return $ do
       Nothing -> exit ()
 
 -- the first string is noncoloured, the second may be coloured depending on config
+chs :: Bool -> a -> a -> a
+chs False a _ = a
+chs True  _ b = b
+
 logger :: LoggerInternal -> LogLine -> T.Text -> T.Text -> IO ()
-logger (AsyncLoggerInternal tchan) _ s _ = atomically $ writeTChan tchan s
-logger (SyncLoggerInternal h lock) _ s _ = withMVar lock $ \_ -> T.hPutStr h s >> hFlush h
+logger (AsyncLoggerInternal tchan c) _ ns s = atomically . writeTChan tchan $ chs c ns s
+logger (SyncLoggerInternal h lock c) _ ns s = withMVar lock $ \_ -> do
+                                                T.hPutStr h (chs c ns s)
+                                                hFlush h
 logger (TChanLoggerInternal tchan) l _ _ = atomically $ writeTChan tchan l
 
 formatLine :: Bool -> LogFormat -> LogLine -> T.Text
@@ -351,7 +353,7 @@ forkSLog :: (MonadBaseControl IO m, MonadIO m) => T.Text -> SLogT m () -> SLogT 
 forkSLog tname (SLogT m) = SLogT . local (\e -> e { threadName = tname }) $ fork m
 
 padS :: Int -> T.Text -> T.Text
-padS n t = t `T.append` T.replicate (T.length t - n) " "
+padS n t = t `T.append` T.replicate (n - T.length t) " "
 
 instance (MonadIO m, Functor m) => MonadSLog (SLogT m) where
     log sev s = do

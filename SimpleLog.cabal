@@ -17,5 +17,6 @@ cabal-version:       >=1.8
 library
   exposed-modules:     System.Log.SLog.Format, System.Log.SLog
   -- other-modules:       
-  build-depends:       base ==4.6.*, transformers ==0.3.*, template-haskell ==2.8.*, bytestring ==0.10.*, attoparsec ==0.10.*, time ==1.4.*, old-locale ==1.0.*, ansi-terminal ==0.6.*, mtl ==2.1.*, stm ==2.4.*, ForkableT ==0.1.*, directory ==1.2.*, containers ==0.5.*, resourcet ==0.4.*, ForkableTInstances ==0.1.*, transformers-base ==0.4.*, monad-control ==0.3.*, text ==0.11.*, th-lift ==0.5.*, semigroups ==0.9.*
+  build-depends:       base ==4.6.*, transformers ==0.3.*, template-haskell ==2.8.*, bytestring ==0.10.*, attoparsec ==0.10.*, time ==1.4.*, old-locale ==1.0.*, ansi-terminal ==0.6.*, mtl ==2.1.*, stm ==2.4.*, ForkableT ==0.1.*, directory ==1.2.*, containers ==0.5.*, resourcet ==0.4.*, transformers-base ==0.4.*, monad-control ==0.3.*, text ==0.11.*, th-lift ==0.5.*, semigroups ==0.9.*
   hs-source-dirs:      src
+  ghc-options: -threaded
