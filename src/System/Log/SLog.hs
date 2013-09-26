@@ -47,6 +47,7 @@ import Control.Monad.Cont
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Prelude hiding (log)
+import System.IO.Unsafe (unsafeInterleaveIO)
 
 import System.Log.SLog.Format
 
@@ -130,13 +131,6 @@ defaultLogConfig fName
                             ]
                 }
 
--- data LoggerInternal
---     = AsyncFileLoggerInternal (TChan T.Text)
---     | SyncFileLoggerInternal Handle (MVar ())
---     | StdoutLoggerInternal (MVar ())
---     | StderrLoggerInternal (MVar ())
---     | TChanLoggerInternal (TChan LogLine)
-
 data LoggerInternal
     = SyncLoggerInternal Handle (MVar ()) Bool
     | AsyncLoggerInternal (TChan T.Text) Bool
@@ -158,10 +152,6 @@ newtype SLogT m a
                , MonadThrow, MonadResource, MonadReader SLogEnv)
 deriving instance (MonadBase IO m) => MonadBase IO (SLogT m)
 
--- SLogT n b -> n b
-
--- m (StT Resou) -> m (StT SLogT)
-
 instance MonadTransControl SLogT where
     newtype StT SLogT a = StTSLogT {unStTSLogT :: StT ResourceT a}
     liftWith f = SLogT . ReaderT $ \r ->
@@ -177,6 +167,13 @@ instance (MonadBaseControl IO m) => MonadBaseControl IO (SLogT m) where
 
 instance MonadTrans SLogT where
     lift = SLogT . lift . lift
+
+instance (MonadIO m) => MonadFix (SLogT m) where
+    mfix f = do
+      m <- liftIO $ newEmptyMVar
+      res <- f =<< liftIO (unsafeInterleaveIO $ takeMVar m)
+      liftIO $ putMVar m res
+      return res
 
 type SLog = SLogT IO
 
