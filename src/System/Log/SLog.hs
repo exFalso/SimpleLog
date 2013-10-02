@@ -176,15 +176,26 @@ waitFlush :: FlushKey -> IO ()
 waitFlush (FlushKey tvar)
     = atomically $ do
         b <- readTVar tvar
-        when (not b) retry
+        unless b retry
 
-runSLogT :: (MonadIO m, MonadThrow m, MonadUnsafeIO m, Applicative m, MonadBaseControl IO m) => LogConfig -> LogFormat -> T.Text -> SLogT m a -> m (a, FlushKey)
-runSLogT LogConfig { .. } lf tName (SLogT r)
+-- Internally we use two ResourceTs. The inner one is used to keep
+-- track of open files, make sure everything gets flushed and release
+-- the FlushKey.
+-- The outer one is used to signal completion. In particular when the
+-- outer ResourceT is run all threads that are internally accounted
+-- for will receive a signal to finish processing, thus running the
+-- internal ResourceT (see forkCleanUp)
+-- Note that this means all SLog threads forked by the user need to
+-- finish before the FlushKey releases
+-- | 'runSLogT' runs an 'SLogT' given a 'LogConfig', 'Format' and the current thread's name.
+-- It returns a 'FlushKey' besides the usual return value.
+runSLogT :: (MonadIO m, MonadThrow m, MonadUnsafeIO m, Applicative m, MonadBaseControl IO m) => LogConfig -> Format -> String -> SLogT m a -> m (a, FlushKey)
+runSLogT LogConfig{..} lf tName (SLogT r)
     = runResourceT $ do
         (_, tvar) <- allocate (newTVarIO False) (\t -> atomically $ writeTVar t True)
         runResourceT $ do
           internals <- initLoggers loggers
-          a <- lift $ runReaderT r SLogEnv{ threadName = tName
+          a <- lift $ runReaderT r SLogEnv{ threadName = T.pack tName
                                           , loggerInternals = internals
                                           , logColours = ansiColours
                                           , logFormat = lf }
