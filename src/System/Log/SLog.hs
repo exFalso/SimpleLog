@@ -168,13 +168,6 @@ instance (MonadBaseControl IO m) => MonadBaseControl IO (SLogT m) where
 instance MonadTrans SLogT where
     lift = SLogT . lift . lift
 
-instance (MonadIO m) => MonadFix (SLogT m) where
-    mfix f = do
-      m <- liftIO $ newEmptyMVar
-      res <- f =<< liftIO (unsafeInterleaveIO $ takeMVar m)
-      liftIO $ putMVar m res
-      return res
-
 type SLog = SLogT IO
 
 newtype FlushKey = FlushKey (TVar Bool)
