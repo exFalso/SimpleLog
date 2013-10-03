@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, TemplateHaskell #-}
+{-# LANGUAGE OverloadedStrings, TemplateHaskell, Trustworthy #-}
 {-|
   This module defines the 'Format' datatype that describes how to format a log line.
   It also defines a template function @$(format _) :: 'Format'@ that allows C-style string formatting.

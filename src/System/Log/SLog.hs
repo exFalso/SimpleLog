@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, DefaultSignatures, ScopedTypeVariables, NamedFieldPuns, OverloadedStrings, MultiParamTypeClasses, TemplateHaskell, FlexibleContexts, TypeFamilies, StandaloneDeriving, RecordWildCards #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, DefaultSignatures, ScopedTypeVariables, NamedFieldPuns, OverloadedStrings, MultiParamTypeClasses, TemplateHaskell, FlexibleContexts, TypeFamilies, StandaloneDeriving, RecordWildCards, Trustworthy #-}
 {-|
   SimpleLog is a library for convenient and configurable logging. It uses the usual monad transformer + associated class design: 'SLogT' and 'MonadSLog'.
 
@@ -150,7 +150,7 @@ import System.Console.ANSI
 import System.Directory
 import Control.Concurrent
 import Control.Concurrent.STM
-import Control.Concurrent.ForkableT
+import Control.Concurrent.ForkableT.Instances
 
 -- | The type of severities with increasing importance
 data Severity
