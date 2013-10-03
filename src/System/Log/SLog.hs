@@ -54,7 +54,8 @@ main = do
     logD \"This will not appear on stdout\"
     _ \<- forkSLog \"child\" $ do
       logS \"I am the child\"
-      logW \"CHILD SHUTTING DOWN AFTER 5 SECONDS\"
+      liftIO $ threadDelay 5000000
+      logW \"CHILD SHUTTING DOWN\"
     logI \"Exiting main thread\"
   waitFlush fkey
   c \<- countTChan tchan
