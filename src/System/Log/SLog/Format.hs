@@ -139,7 +139,7 @@ datetimeParser = fmap T.unpack $ A.char '(' *> datetimeParser' <* A.char ')'
 format :: String -> ExpQ
 format s = [| finaliseFormat $(mat s) |]
 
--- | $('mat' _) :: FormatTH is a template function that parses the passed in format string and returns a FormatTH.
+-- | $(mat _) :: FormatTH is a template function that parses the passed in format string and returns a FormatTH.
 mat :: String -> ExpQ
 mat s = case A.parseOnly formatParser $ T.pack s of
           Left err -> fail err
