@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, DefaultSignatures, ScopedTypeVariables, NamedFieldPuns, OverloadedStrings, MultiParamTypeClasses, TemplateHaskell, FlexibleContexts, TypeFamilies, StandaloneDeriving, RecordWildCards, Trustworthy #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, DefaultSignatures, ScopedTypeVariables, NamedFieldPuns, OverloadedStrings, MultiParamTypeClasses, TemplateHaskell, FlexibleContexts, TypeFamilies, StandaloneDeriving, RecordWildCards, RankNTypes, Trustworthy #-}
 {-|
   SimpleLog is a library for convenient and configurable logging. It uses the usual monad transformer + associated class design: 'SLogT' and 'MonadSLog'.
 
@@ -127,6 +127,7 @@ module System.Log.SLog
     -- * Utility functions
     , forkSLog
     , formatLine
+    , unsafeUnliftSLogT
     )
 where
 
@@ -517,6 +518,16 @@ forkSLog tname (SLogT m) = SLogT . local (\e -> e { threadName = T.pack tname })
 -- | helper method for padding with spaces
 padS :: Int -> T.Text -> T.Text
 padS n t = t `T.append` T.replicate (n - T.length t) " "
+
+-- | 'unsafeUnliftSLog' gives you an unsafe unlift of an SLogT by assuming that any unlifted computation will finish earlier than the runSLogT of the calling thread.
+-- This is useful when a library is implicitly forking but we still need to log in the forked threads, and we know that the child threads will finish earlier than the parent. An example is Network.WebSockets
+unsafeUnliftSLogT :: forall m b. (Monad m, MonadBaseControl IO m) =>
+                    ((forall a. SLogT m a -> m a) -> SLogT m b) -> SLogT m b
+unsafeUnliftSLogT f = do
+  env <- SLogT ask
+  let unlift :: SLogT m c -> m c
+      unlift s = runResourceT $ runReaderT (unSLogT s) env
+  f unlift
 
 instance (MonadIO m) => MonadSLog (SLogT m) where
     log sev s = do
