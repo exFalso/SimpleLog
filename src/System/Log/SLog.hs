@@ -521,6 +521,7 @@ padS :: Int -> T.Text -> T.Text
 padS n t = t `T.append` T.replicate (n - T.length t) " "
 
 -- | 'unsafeUnliftSLog' gives you an unsafe unlift of an SLogT by assuming that any unlifted computation will finish earlier than the runSLogT of the calling thread.
+-- It is unsafe because if the unlifted computation doesn't finish earlier then it may access deallocated resources.
 -- This is useful when a library is implicitly forking but we still need to log in the forked threads, and we know that the child threads will finish earlier than the parent. An example is Network.WebSockets
 unsafeUnliftSLogT :: forall m b. (Monad m, MonadBaseControl IO m) =>
                     ((forall a. SLogT m a -> m a) -> SLogT m b) -> SLogT m b
