@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, DefaultSignatures, ScopedTypeVariables, NamedFieldPuns, OverloadedStrings, MultiParamTypeClasses, TemplateHaskell, FlexibleContexts, TypeFamilies, StandaloneDeriving, RecordWildCards, RankNTypes, Trustworthy #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, DefaultSignatures, ScopedTypeVariables, NamedFieldPuns, OverloadedStrings, MultiParamTypeClasses, TemplateHaskell, FlexibleContexts, TypeFamilies, StandaloneDeriving, RecordWildCards, RankNTypes, Trustworthy, UndecidableInstances #-}
 {-|
   SimpleLog is a library for convenient and configurable logging. It uses the usual monad transformer + associated class design: 'SLogT' and 'MonadSLog'.
 
@@ -287,8 +287,9 @@ data SLogEnv
 newtype SLogT m a
     = SLogT { unSLogT :: ReaderT SLogEnv (ResourceT m) a }
       deriving ( Functor, Monad, MonadIO, Applicative
-               , MonadThrow, MonadResource )
+               , MonadThrow )
 deriving instance (MonadBase IO m) => MonadBase IO (SLogT m)
+deriving instance (MonadBase IO m, MonadThrow m, MonadIO m) => MonadResource (SLogT m)
 
 instance MonadTransControl SLogT where
     newtype StT SLogT a = StTSLogT {unStTSLogT :: StT ResourceT a}
@@ -332,7 +333,7 @@ waitFlush (FlushKey tvar)
 -- finish before the FlushKey releases
 -- | 'runSLogT' runs an 'SLogT' given a 'LogConfig', 'Format' and the current thread's name.
 -- It returns a 'FlushKey' besides the usual return value.
-runSLogT :: (MonadIO m, MonadThrow m, MonadUnsafeIO m, Applicative m, MonadBaseControl IO m) => LogConfig -> Format -> String -> SLogT m a -> m (a, FlushKey)
+runSLogT :: (MonadResource m, MonadBaseControl IO m) => LogConfig -> Format -> String -> SLogT m a -> m (a, FlushKey)
 runSLogT LogConfig{..} lf tName (SLogT r)
     = runResourceT $ do
         (_, tvar) <- allocate (newTVarIO False) (\t -> atomically $ writeTVar t True)
@@ -345,7 +346,7 @@ runSLogT LogConfig{..} lf tName (SLogT r)
           return (a, FlushKey tvar)
 
 -- | 'simpleLog' uses the default configuration with the specified log file name. It also waits using 'waitFlush' until all resources have been released.
-simpleLog :: (MonadIO m, MonadUnsafeIO m, MonadThrow m, Applicative m, MonadBaseControl IO m) => FilePath -> SLogT m a -> m a
+simpleLog :: (MonadResource m, MonadBaseControl IO m) => FilePath -> SLogT m a -> m a
 simpleLog fName s = do
   tName <- show <$> liftIO myThreadId
   (a, fkey) <- runSLogT (defaultLogConfig fName) defaultLogFormat tName s
@@ -355,7 +356,7 @@ simpleLog fName s = do
 -- | initLoggers initialises the user specified 'Logger's and returns the internal representation of them.
 -- 
 -- This includes first aggregating the 'Logger's resolving any ambiguities, then opening the logging streams.
-initLoggers :: (MonadIO m, MonadThrow m, MonadUnsafeIO m, Applicative m) => [(Filter, Logger)] -> ResourceT (ResourceT m) [(Filter, LoggerInternal)]
+initLoggers :: (MonadResource m, Applicative m) => [(Filter, Logger)] -> ResourceT (ResourceT m) [(Filter, LoggerInternal)]
 initLoggers fls = do
   InitState{..} <- liftIO $ aggregateLoggers fls
 
@@ -417,7 +418,7 @@ canonExist f = appendFile f "" >> canonicalizePath f
 
 -- | 'forkCleanup' forks a ResIO thread that will get an exit signal through a TVar when the outer ResourceT is run.
 -- The forked off ResourceT is the inner one
-forkCleanUp :: (MonadIO m, MonadThrow m, MonadUnsafeIO m, Applicative m) =>
+forkCleanUp :: (MonadResource m) =>
                (TVar Bool -> ResIO ()) -> ResourceT (ResourceT m) ThreadId
 forkCleanUp io = do
   (_, exitSignal) <- allocate (newTVarIO False) (\t -> atomically $ writeTVar t True)
