@@ -292,17 +292,17 @@ deriving instance (MonadBase IO m) => MonadBase IO (SLogT m)
 deriving instance (MonadBase IO m, MonadThrow m, MonadIO m) => MonadResource (SLogT m)
 
 instance MonadTransControl SLogT where
-    newtype StT SLogT a = StTSLogT {unStTSLogT :: StT ResourceT a}
+    type StT SLogT a = StT ResourceT a
     liftWith f = SLogT . ReaderT $ \r ->
                    liftWith $ \lres ->
                      f $ \(SLogT t) ->
-                       liftM StTSLogT $ lres $ runReaderT t r
-    restoreT = SLogT . lift . restoreT . liftM unStTSLogT
+                       lres $ runReaderT t r
+    restoreT = SLogT . lift . restoreT
 
 instance (MonadBaseControl IO m) => MonadBaseControl IO (SLogT m) where
-    newtype StM (SLogT m) a = StMSLogT { unStMSLogT :: ComposeSt SLogT m a }
-    liftBaseWith = defaultLiftBaseWith StMSLogT
-    restoreM = defaultRestoreM unStMSLogT
+    type StM (SLogT m) a = ComposeSt SLogT m a
+    liftBaseWith = defaultLiftBaseWith
+    restoreM = defaultRestoreM
 
 instance MonadTrans SLogT where
     lift = SLogT . lift . lift
